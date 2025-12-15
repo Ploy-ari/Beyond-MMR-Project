@@ -1,168 +1,63 @@
-# Beyond MMR — ระบบ Data Pipeline & Analytics (Python + Postgres + Google Sheets)
+# Beyond MMR – คู่มือใช้งานเร็ว (ภาษาไทย)
 
-โปรเจกต์นี้เป็น **End-to-End Data Pipeline** สำหรับวิเคราะห์ “ราคาขายรถมือสองเทียบกับ MMR” โดยทำงานตั้งแต่ ingest ไฟล์ CSV → ทำความสะอาด/สร้างฟีเจอร์ใน Postgres → ส่งตารางที่พร้อมใช้ขึ้น Google Sheets → ต่อ Looker Studio ทำ Dashboard
-
----
-
-## จุดเด่นสำหรับพอร์ต (Portfolio Highlights)
-- สร้าง **ETL Pipeline ครบวงจร** ด้วย **Dockerized Postgres** (แยกชั้น raw → production)
-- ทำ **Data Cleaning + Feature Engineering** เพื่อเปรียบเทียบ `sellingprice` vs `mmr`
-- ส่งตารางผลลัพธ์ที่พร้อมทำ BI ขึ้น **Google Sheets** (ต่อ Looker Studio ได้ทันที)
-- ออกแบบผลลัพธ์ให้วิเคราะห์ได้ทั้ง **รายเวลา** และ **แยกตามกลุ่ม** (ยี่ห้อ/รัฐ/รายเดือน)
-
----
+คำสั่งที่ใช้บ่อย (ก๊อปแล้วรันได้ทันที):
+1. ติดตั้งไลบรารี: `python -m pip install -r requirements.txt`
+2. เปิด Postgres (Docker): `docker compose up -d`
+3. รันทั้ง pipeline (ingest → transform → publish): `python -u run_pipeline.py`
+4. รันเฉพาะ publish (หลังจากมีตาราง production แล้ว): `python -u publish.py`
+5. ปิด Docker: `docker compose down`
 
 ## ภาพรวมโปรเจกต์
-**เป้าหมาย:** เปลี่ยนข้อมูลขายรถมือสองดิบให้เป็นตารางที่ “พร้อมวิเคราะห์” เพื่อวัดผลว่าราคาขายจริง **สูง/ต่ำกว่า MMR** มากน้อยแค่ไหน และมีแพทเทิร์นอะไรตามช่วงเวลา/ภูมิภาค/สภาพรถ
+- ไหลงาน: CSV → Postgres (raw_data) → Postgres (production, ทำความสะอาด/เพิ่มฟีเจอร์) → Google Sheets → Looker Studio
+- โฟกัส: เปรียบเทียบ `sellingprice` vs `mmr`, เพิ่มฟีเจอร์ price diff/percent และคัดข้อมูลให้พร้อมทำ Dashboard
 
-**คำถามหลัก:**
-- รถขาย **สูงกว่า/ต่ำกว่า MMR** เท่าไหร่?
-- สัดส่วน “Above MMR” แตกต่างกันไหมตาม **ยี่ห้อ (make)** / **รัฐ (state)** / **เวลา (month)** / **สภาพรถ (condition)**
+## การตั้งค่า
+1) ติดตั้ง Python deps  
+   `python -m pip install -r requirements.txt`
 
----
+2) ตั้งค่า .env  
+   คัดลอก `.env.example` เป็น `.env` แล้วกรอกค่า:
+   - DB: `DB_USER=car_user`, `DB_PASSWORD=car_password`, `DB_NAME=car_db`, `DB_HOST=localhost`, `DB_PORT=5432`
+   - Google Sheets: `GOOGLE_SHEETS_SPREADSHEET_ID=<ใส่ไอดีชีตของคุณ>`
+   - ไฟล์ credential: `GOOGLE_APPLICATION_CREDENTIALS=./service_account.json` (หรือใช้ `GOOGLE_CREDENTIALS_JSON`)
 
-## โครงสร้างการทำงาน (Architecture)
-```text
-car_prices.csv
-  → Postgres (raw_data.vehicle_sales)
-  → Postgres (production.* ตารางพร้อมใช้ + ฟีเจอร์ที่สร้างเพิ่ม)
-  → Google Sheets (ตารางสำหรับ BI)
-  → Looker Studio (Dashboard)
-เครื่องมือที่ใช้ (Tech Stack)
-Python (สคริปต์ ETL)
+3) เริ่ม Postgres ด้วย Docker  
+   `docker compose up -d`  
+   เช็กสถานะ: `docker compose ps`
 
-PostgreSQL (เก็บข้อมูล + แปลงข้อมูล)
+## การรัน pipeline
+- รันครบทุกขั้นตอน (แนะนำ):  
+  `python -u run_pipeline.py`  
+  ขั้นตอน: ingest CSV → raw_data | transform สร้าง production tables | publish ขึ้น Google Sheets (เช็กลิมิตเซลล์ให้)
 
-Docker / Docker Compose (รันฐานข้อมูลแบบ local)
+- รันเฉพาะ publish (ใช้ตาราง production ที่มีอยู่แล้ว):  
+  `python -u publish.py`
 
-Google Sheets API (ชั้น publish)
+- ปิดบริการ:  
+  `docker compose down`
 
-Looker Studio (ชั้น visualize)
+## กติกาการทำความสะอาดข้อมูล (transform)
+- ตัดแถวที่ขาดฟิลด์หลัก: vin, year, state, saledate, sellingprice, mmr, odometer, condition
+- ช่วงค่าที่รับได้: sellingprice > 0; mmr > 0; year 1950–(ปีปัจจุบัน+1); odometer 0–1,500,000; condition 0–5
+- วันที่: แปลง saledate เป็น UTC; ต้องมี sale_datetime; vehicle_age > 0 เท่านั้น
+- การจัดรูปแบบสตริง: trim; state เป็นตัวพิมพ์ใหญ่; make/model/trim/body/transmission/color/interior/seller เป็น Title Case; vin เป็นตัวพิมพ์ใหญ่
+- ลบซ้ำตามคู่ (vin, sale_datetime) เก็บแถวแรก
+- ฟีเจอร์ที่สร้าง: sale_year/month/quarter, vehicle_age, price_diff, price_diff_pct, is_above_mmr, odometer_per_year
 
-วิธีรันแบบเร็ว (Quick Start)
-1) ติดตั้ง dependencies
-bash
-Copy code
-python -m pip install -r requirements.txt
-2) เปิด Postgres ด้วย Docker
-bash
-Copy code
-docker compose up -d
-docker compose ps
-3) ตั้งค่า environment variables
-คัดลอก .env.example → .env แล้วกรอกค่าตามจริง
+## พฤติกรรมตอนส่งขึ้น Google Sheets
+- เคารพลิมิต 10M เซลล์: `vehicle_sales_enriched` ส่งเฉพาะคอลัมน์สำคัญและตั้งเพดาน ~8M เซลล์ (ตอนนี้หลังทำความสะอาดได้ ~64k แถว)
+- Summary แท็บเล็ก ส่งครบ: `sales_summary_by_make_month`, `sales_summary_by_state_month`
+- วันที่ใน Sheets เป็นรูป `YYYY-MM-DD` เพื่อ Group ต่อใน Looker Studio ได้ง่าย
 
-Database
+## รายการไฟล์
+- `ingest.py` – โหลด CSV → `raw_data.vehicle_sales`
+- `transform.py` – ทำความสะอาด + สร้างฟีเจอร์ → ตารางใน `production`
+- `publish.py` – ส่งตาราง production ไป Google Sheets
+- `run_pipeline.py` – รันครบ ingest → transform → publish
+- `docker-compose.yml` – คอนฟิก Postgres
+- `.env.example` – ตัวอย่างไฟล์ตั้งค่า.
 
-DB_USER=car_user
-
-DB_PASSWORD=car_password
-
-DB_NAME=car_db
-
-DB_HOST=localhost
-
-DB_PORT=5432
-
-Google Sheets
-
-GOOGLE_SHEETS_SPREADSHEET_ID=YOUR_SHEET_ID
-
-Credentials (เลือกอย่างใดอย่างหนึ่ง):
-
-GOOGLE_APPLICATION_CREDENTIALS=./service_account.json
-
-หรือ GOOGLE_CREDENTIALS_JSON=YOUR_JSON_STRING
-
-ห้ามอัปขึ้น GitHub: .env และไฟล์ credential จริง
-
-4) รันทั้ง pipeline (ingest → transform → publish)
-bash
-Copy code
-python -u run_pipeline.py
-5) รันเฉพาะ publish (กรณีมีตาราง production แล้ว)
-bash
-Copy code
-python -u publish.py
-6) ปิดบริการ
-bash
-Copy code
-docker compose down
-ตรรกะการทำความสะอาด/สร้างฟีเจอร์ (Data & Transform Logic)
-คอลัมน์หลักที่ต้องมี
-vin, year, state, saledate, sellingprice, mmr, odometer, condition
-
-กติกาการทำความสะอาด (ตัวอย่าง)
-sellingprice > 0 และ mmr > 0
-
-year อยู่ในช่วงที่สมเหตุสมผล (เช่น 1950 → ปีปัจจุบัน+1)
-
-odometer อยู่ในช่วงที่เป็นไปได้
-
-condition อยู่ในสเกลที่กำหนด (เช่น 0–5)
-
-แปลง saledate ให้เป็น datetime ที่ใช้งานได้ และจัดการ timezone ให้สม่ำเสมอ
-
-ฟีเจอร์ที่สร้างเพิ่ม (ตัวอย่าง)
-price_diff = sellingprice - mmr
-
-price_diff_pct = price_diff / mmr
-
-is_above_mmr (true/false)
-
-vehicle_age
-
-time buckets: sale_year, sale_month, sale_quarter
-
-odometer_per_year
-
-ผลลัพธ์ (Outputs)
-ตาราง Production ใน Postgres
-production.vehicle_sales_enriched — ข้อมูลที่ clean + มีฟีเจอร์เพิ่ม
-
-production.sales_summary_by_make_month — สรุปยอด/ค่าเฉลี่ยรายเดือนตาม make
-
-production.sales_summary_by_state_month — สรุปยอด/ค่าเฉลี่ยรายเดือนตาม state
-
-ส่งขึ้น Google Sheets
-ส่งตารางที่จำเป็นขึ้น spreadsheet เพื่อเชื่อม BI
-
-แนะนำรูปแบบวันที่ YYYY-MM-DD เพื่อ group/filter ใน Looker Studio ง่าย
-
-โครงสร้างไฟล์ (Project Structure)
-text
-Copy code
-.
-├── ingest.py              # CSV → raw_data.vehicle_sales
-├── transform.py           # raw_data → production tables + features
-├── publish.py             # production → Google Sheets
-├── run_pipeline.py        # รัน ingest → transform → publish
-├── docker-compose.yml     # ตั้งค่า Postgres
-├── requirements.txt       # รายการ dependencies
-├── car_prices.csv         # ชุดข้อมูลต้นทาง
-├── .env.example           # ตัวอย่างไฟล์ตั้งค่า
-├── README.md
-└── .gitignore
-ลิงก์ Dashboard (ใส่เพิ่มได้)
-Looker Studio: [ใส่ลิงก์ที่นี่]
-
-Google Sheet: [ใส่ลิงก์ที่นี่]
-
-ตัวอย่างมุมมองที่แนะนำ:
-
-เปรียบเทียบ MMR vs ราคาขายจริง (distribution / avg diff)
-
-% ขายสูงกว่า MMR แยกตาม make/state/month
-
-แนวโน้ม price_diff_pct ตามเวลา
-
-ผลกระทบของ condition/odometer ต่อ price_diff
-
-แก้ปัญหาเบื้องต้น (Troubleshooting)
-Docker ไม่รัน: เปิด Docker Desktop แล้วสั่ง docker compose up -d
-
-credential Google ผิด: ตรวจ path GOOGLE_APPLICATION_CREDENTIALS หรือค่า JSON env
-
-ส่งข้อมูลขึ้น Sheets แล้วชน limit: ส่งเฉพาะ summary ก่อน หรือปรับให้ publish แบบแบ่งชุดใน publish.py
-
-::contentReference[oaicite:0]{index=0}
+## แก้ปัญหาเบื้องต้น
+- Docker ไม่รัน: เปิด Docker Desktop แล้วสั่ง `docker compose up -d`
+- ปัญหา credential: ตรวจ path `service_account.json` ใน `.env` หรือใช้ `GOOGLE_CREDENTIALS_JSON`
+- ชนลิมิตเซลล์: ลดคอลัมน์/จำนวนแถว หรือแบ่งหลายชีต ปรับค่า `SHEET_CELL_LIMITS` ใน `publish.py` (รวมทั้งไฟล์ต้องต่ำกว่า 10M เซลล์)
